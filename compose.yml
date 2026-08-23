@@ -1,0 +1,24 @@
+services:
+  bot:
+    build: .
+    image: konvert-bot:latest
+    container_name: konvert-bot
+    restart: unless-stopped
+    init: true
+    env_file: .env
+    environment:
+      DATA_DIR: /app/data
+      TMP_DIR: /app/tmp
+    volumes:
+      - bot-data:/app/data
+    tmpfs:
+      - /app/tmp:size=512m,mode=1777
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  bot-data:

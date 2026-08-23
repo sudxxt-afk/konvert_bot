@@ -6,10 +6,27 @@ import sys
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.types import BotCommand
 
 from config import BOT_TOKEN
 from db import db
 from handlers import convert, start
+
+
+async def _setup_bot_info(bot: Bot) -> None:
+    await bot.set_my_commands(
+        [
+            BotCommand(command="start", description="🚀 Запустить бота"),
+            BotCommand(command="status", description="📊 Моя статистика"),
+            BotCommand(command="qr", description="🔗 QR-код из текста"),
+            BotCommand(command="help", description="✨ Возможности"),
+        ]
+    )
+    await bot.set_my_description(
+        "Пришли файл — сконвертирую: видео → войс/MP3/GIF, аудио → MP3/WAV/M4A, "
+        "фото и PDF. Бесплатно, без лимитов и рекламы."
+    )
+    await bot.set_my_short_description("Универсальный конвертер файлов. Просто пришли файл 📎")
 
 
 async def main() -> None:
@@ -40,6 +57,7 @@ async def main() -> None:
 
     try:
         await bot.delete_webhook(drop_pending_updates=True)
+        await _setup_bot_info(bot)
         await dp.start_polling(bot)
     finally:
         await db.close()

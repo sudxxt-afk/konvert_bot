@@ -38,6 +38,9 @@ def categories_menu() -> InlineKeyboardMarkup:
                 _btn("#️⃣ Хеши и инфо", "cat:tools", "success", "cat:tools"),
             ],
             [
+                InlineKeyboardButton(text="📤 Поделиться ботом", switch_inline_query="share"),
+            ],
+            [
                 _btn("📊 Статистика", "my_stats"),
                 _btn("❓ Как пользоваться", "howto"),
             ],

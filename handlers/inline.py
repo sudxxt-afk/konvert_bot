@@ -4,11 +4,15 @@ import logging
 from collections import OrderedDict
 
 from aiogram import Bot, Router
+from aiogram.enums import ParseMode
 from aiogram.types import (
     FSInputFile,
     InlineQuery,
+    InlineQueryResultArticle,
     InlineQueryResultCachedPhoto,
     InlineQueryResultsButton,
+    InputTextMessageContent,
+    LinkPreviewOptions,
 )
 
 from config import QR_UPLOAD_CHANNEL
@@ -20,10 +24,38 @@ router = Router(name="inline")
 _cache: OrderedDict[str, str] = OrderedDict()
 _CACHE_MAX = 300
 
+SHARE_CARD = (
+    "🔄 <b>KudexConvert</b> — конвертер всего в Telegram\n\n"
+    "🎬 Видео → MP3 · GIF · стикеры\n"
+    "🎵 Аудио · 🖼 Фото · 📄 PDF · 🗜 ZIP\n"
+    "🔗 QR-коды · ⚡️ ускорение ×2 · ✂️ обрезка\n\n"
+    "⚡️ Бесплатно · Без лимитов · Без рекламы\n"
+    "👉 @kudexconvert_bot"
+)
+
 
 @router.inline_query()
 async def inline_qr(query: InlineQuery, bot: Bot) -> None:
     text = (query.query or "").strip()
+
+    if text.lower().startswith("share"):
+        await query.answer(
+            results=[
+                InlineQueryResultArticle(
+                    id="share-" + hashlib.md5(text.encode()).hexdigest()[:8],
+                    title="🔄 KudexConvert — конвертер всего",
+                    description="Видео, аудио, фото, PDF, QR — бесплатно",
+                    input_message_content=InputTextMessageContent(
+                        message_text=SHARE_CARD,
+                        parse_mode=ParseMode.HTML,
+                        link_preview_options=LinkPreviewOptions(is_disabled=True),
+                    ),
+                )
+            ],
+            cache_time=0,
+        )
+        return
+
     if not text:
         await query.answer(
             results=[],

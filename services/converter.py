@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import uuid
 import zipfile
 from dataclasses import dataclass, replace
@@ -235,12 +236,78 @@ async def _media_info(src: Path) -> str:
     return "\n".join(lines)
 
 
-def eval_fps(expr: str) -> float:
-    num, _, den = expr.partition("/")
+async def _probe_duration(src: Path) -> float:
+    proc = await asyncio.create_subprocess_exec(
+        "ffprobe", "-v", "quiet", "-print_format", "json",
+        "-show_format", str(src),
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+    )
+    stdout, _ = await proc.communicate()
     try:
-        return int(num) / int(den)
-    except (ValueError, ZeroDivisionError):
-        return 0.0
+        data = json.loads(stdout.decode())
+        dur = float(data.get("format", {}).get("duration", 0) or 0)
+    except (json.JSONDecodeError, ValueError):
+        dur = 0
+    if dur <= 0:
+        raise RuntimeError("no duration")
+    return dur
+
+
+async def _speed(src: Path, factor: float, kind: str) -> Path:
+    if kind == VIDEO:
+        out = _out(src, "_fast.mp4")
+        await _ffmpeg(
+            "-i", str(src),
+            "-vf", f"setpts=PTS/{factor}",
+            "-af", f"atempo={factor}",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "24",
+            "-c:a", "aac", "-b:a", "128k",
+            str(out),
+        )
+    else:
+        out = _out(src, "_fast.mp3")
+        await _ffmpeg(
+            "-i", str(src), "-af", f"atempo={factor}",
+            "-c:a", "libmp3lame", "-q:a", "4", str(out),
+        )
+    return out
+
+
+async def _trim_clip(src: Path, start: float, duration: float, kind: str) -> Path:
+    ss, t = f"{start:.2f}", f"{duration:.2f}"
+    if kind in (AUDIO, VOICE):
+        out = _out(src, "_cut.mp3")
+        await _ffmpeg("-ss", ss, "-t", t, "-i", str(src),
+                      "-c:a", "libmp3lame", "-q:a", "4", str(out))
+    else:
+        out = _out(src, "_cut.mp4")
+        await _ffmpeg("-ss", ss, "-t", t, "-i", str(src),
+                      "-c:v", "libx264", "-preset", "veryfast", "-crf", "24",
+                      "-c:a", "aac", "-b:a", "128k", str(out))
+    return out
+
+
+def _unzip_files(src: Path, dest: Path) -> tuple[list[Path], int]:
+    files: list[Path] = []
+    skipped = 0
+    with zipfile.ZipFile(src) as zf:
+        total = sum(1 for i in zf.infolist() if not i.is_dir())
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+            name = info.filename
+            parts = [p for p in Path(name).parts if p not in ("/", "\\", ".", "..")]
+            if not parts or name.startswith("__MACOSX") or parts[-1].startswith("."):
+                continue
+            if len(files) >= 20:
+                break
+            target = dest.joinpath(*parts[-3:])
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with zf.open(info) as s, open(target, "wb") as f:
+                shutil.copyfileobj(s, f)
+            files.append(target)
+        skipped = max(0, total - len(files))
+    return files, skipped
 
 
 def _hash_file_sync(src: Path) -> str:
@@ -410,8 +477,13 @@ XLSX = "xlsx"
 CSV = "csv"
 TEXT = "text"
 SUB = "sub"
+ZIP = "zip"
 
 MEDIA_KINDS = frozenset({VIDEO, VIDEO_NOTE, AUDIO, VOICE})
+
+
+def _media_send(kind: str) -> str:
+    return "animation" if kind == VIDEO else "audio"
 
 ACTIONS: dict[str, ActionSpec] = {
     spec.code: spec
@@ -435,6 +507,10 @@ ACTIONS: dict[str, ActionSpec] = {
         ActionSpec("webm", "🌐 Сжать в WebM", frozenset({VIDEO}), "animation", lambda s: _to_webm(s)),
         ActionSpec("mute", "🔇 Убрать звук", frozenset({VIDEO}), "animation", lambda s: _strip_audio(s)),
         ActionSpec("vsticker", "🩹 Видео-стикер 3 сек", frozenset({VIDEO}), "animation", lambda s: _video_sticker(s)),
+        ActionSpec("speed15", "⚡️ ×1.5 быстрее", MEDIA_KINDS, "auto",
+                   lambda s, k: _speed(s, 1.5, k)),
+        ActionSpec("speed2", "⚡️ ×2 быстрее", MEDIA_KINDS, "auto",
+                   lambda s, k: _speed(s, 2.0, k)),
         ActionSpec("jpg", "🖼 JPEG", frozenset({PHOTO}), "photo",
                    lambda s: asyncio.to_thread(_convert_image, s, "JPEG", quality=90)),
         ActionSpec("png", "🎨 PNG", frozenset({PHOTO}), "photo",
@@ -476,6 +552,11 @@ ACTIONS: dict[str, ActionSpec] = {
                    lambda s: _media_info(s)),
         ActionSpec("hash", "#️⃣ Хеши MD5/SHA256", frozenset({VIDEO, VIDEO_NOTE, AUDIO, VOICE, PHOTO, PDF, DOCX, XLSX, CSV, TEXT, SUB}), "text",
                    lambda s: _hash_file(s)),
+        ActionSpec("unzip", "📤 Распаковать архив", frozenset({ZIP}), "document",
+                   lambda s, k: asyncio.to_thread(
+                       _unzip_files, s,
+                       s.with_name(s.stem + "_unpacked"),
+                   )),
     )
 }
 
@@ -518,6 +599,9 @@ _GROUPS = {
     "webm": "🎞 Формат видео",
     "mute": "🎞 Формат видео",
     "vsticker": "🎞 Формат видео",
+    "speed15": "🎚 Темп",
+    "speed2": "🎚 Темп",
+    "unzip": "📤 Распаковка",
     "jpg": "🖼 Конвертировать в",
     "png": "🖼 Конвертировать в",
     "webp": "🖼 Конвертировать в",

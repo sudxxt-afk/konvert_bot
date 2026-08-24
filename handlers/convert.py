@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import logging
 import shutil
 import uuid
@@ -9,6 +10,7 @@ from pathlib import Path
 from aiogram import Bot, F, Router
 from aiogram.enums import ChatAction
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.filters import Command
 from aiogram.types import (
     CallbackQuery,
     FSInputFile,
@@ -21,7 +23,6 @@ from aiogram.types import (
 from config import MAX_FILE_MB, MAX_PARALLEL, TMP_DIR
 from db import db
 from keyboards import conversion_options
-from services.queue import get_queue
 from services.converter import (
     ACTIONS,
     AUDIO,
@@ -35,7 +36,11 @@ from services.converter import (
     VIDEO_NOTE,
     VOICE,
     XLSX,
+    ZIP,
+    _probe_duration,
+    _trim_clip,
 )
+from services.queue import get_queue
 
 logger = logging.getLogger(__name__)
 router = Router(name="convert")
@@ -62,6 +67,7 @@ _DOC_KINDS = {
     ".vtt": SUB,
     ".heic": PHOTO,
     ".heif": PHOTO,
+    ".zip": ZIP,
 }
 
 KIND_TITLES = {
@@ -76,13 +82,14 @@ KIND_TITLES = {
     CSV: "📊 CSV-таблица",
     TEXT: "📃 Текстовый файл",
     SUB: "💬 Субтитры",
+    ZIP: "🗜 ZIP-архив",
 }
 
 _UNSUPPORTED_TEXT = (
     "🙈 <b>Такой формат пока не поддерживаю</b>\n\n"
     "<blockquote>🎬 Видео · 🎵 Аудио · 🖼 Фото (вкл. HEIC)\n"
     "📄 PDF · 📝 DOCX · 📊 XLSX/CSV\n"
-    "💬 Субтитры SRT/VTT · 📃 TXT</blockquote>\n\n"
+    "💬 Субтитры SRT/VTT · 📃 TXT · 🗜 ZIP</blockquote>\n\n"
     "Или отправь <code>/qr текст</code> — сделаю QR-код."
 )
 
@@ -108,6 +115,10 @@ _CACHE_MAX = 500
 _albums: dict[str, Album] = {}
 _album_timers: dict[str, asyncio.Task] = {}
 
+TRIMS: dict[str, dict] = {}
+
+MERGES: dict[int, dict] = {}
+
 
 def _cache_put(key: str, pending: Pending) -> None:
     _cache[key] = pending
@@ -125,6 +136,13 @@ def _fmt_size(num_bytes: int) -> str:
     return f"{value:.1f} ГБ"
 
 
+def _fmt_time(seconds: float) -> str:
+    s = int(seconds)
+    m, sec = divmod(s, 60)
+    h, m = divmod(m, 60)
+    return f"{h}:{m:02d}:{sec:02d}" if h else f"{m}:{sec:02d}"
+
+
 def _build_caption(out_path, src_size: int) -> str:
     out_size = out_path.stat().st_size
     lines = ["✅ <b>Готово!</b>"]
@@ -137,6 +155,10 @@ def _build_caption(out_path, src_size: int) -> str:
             size_line += f" (<b>−{saved}%</b>)"
     lines.append(size_line)
     return "\n".join(lines)
+
+
+def _in_group(message: Message) -> bool:
+    return (message.chat.type or "private") != "private"
 
 
 async def _register(message: Message, kind: str, file_id: str, size: int | None, ext: str | None = None) -> None:
@@ -165,8 +187,9 @@ async def _register(message: Message, kind: str, file_id: str, size: int | None,
     if size:
         meta.append(_fmt_size(size))
     card = f"{title}" + (" · ".join([""] + meta) if meta else "")
+    hint = "\n\n<i>💬 Реплай на это сообщение — предложу форматы снова.</i>" if _in_group(message) else ""
     await message.answer(
-        f"<b>{card}</b>\n\nЧто с ним сделать? 👇",
+        f"<b>{card}</b>\n\nЧто с ним сделать? 👇{hint}",
         reply_markup=conversion_options(kind, key),
     )
 
@@ -212,12 +235,16 @@ async def on_album_photo(message: Message) -> None:
 
 @router.message(F.photo)
 async def on_photo(message: Message) -> None:
+    if _in_group(message) and not message.reply_to_message:
+        return
     photo = message.photo[-1]
     await _register(message, PHOTO, photo.file_id, photo.file_size)
 
 
 @router.message(F.video)
 async def on_video(message: Message) -> None:
+    if _in_group(message) and not message.reply_to_message:
+        return
     await _register(
         message, VIDEO, message.video.file_id, message.video.file_size,
         ext=_ext_from_mime(message.video.mime_type),
@@ -245,13 +272,59 @@ async def on_audio(message: Message) -> None:
     )
 
 
+@router.message(Command("merge"))
+async def cmd_merge(message: Message) -> None:
+    if _in_group(message):
+        await message.answer("📄 Склейка PDF работает только в личке со мной.")
+        return
+    uid = message.from_user.id
+    MERGES[uid] = {"files": [], "chat_id": message.chat.id}
+    await message.answer(
+        "📄 <b>Склейка PDF</b>\n\n"
+        "Пришли несколько PDF-файлов по одному.\n"
+        "Когда закончишь — жми «✅ Склеить».\n\n"
+        "<i>Максимум 10 файлов.</i>",
+        reply_markup=_merge_kb(0),
+    )
+
+
+def _merge_kb(count: int):
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+    rows = []
+    if count >= 2:
+        rows.append([InlineKeyboardButton(text=f"✅ Склеить ({count})", callback_data="mg:go")])
+    elif count == 1:
+        rows.append([InlineKeyboardButton(text="➕ Пришли ещё один PDF…", callback_data="noop")])
+    rows.append([InlineKeyboardButton(text="❌ Отмена", callback_data="mg:x")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 @router.message(F.document)
 async def on_document(message: Message) -> None:
     doc = message.document
     name = doc.file_name or ""
-    ext = name.rsplit(".", 1)[-1].upper() if "." in name else None
+    ext_low = name.rsplit(".", 1)[-1].lower() if "." in name else ""
 
-    kind = _DOC_KINDS.get("." + name.rsplit(".", 1)[-1].lower() if "." in name else "")
+    uid = message.from_user.id
+    if uid in MERGES and ext_low == "pdf" and not _in_group(message):
+        entry = MERGES[uid]
+        if len(entry["files"]) >= 10:
+            await message.answer("😅 Хватит, максимум 10 файлов!")
+            return
+        entry["files"].append(doc.file_id)
+        count = len(entry["files"])
+        await message.answer(
+            f"➕ Добавил <b>{name[:40]}</b>\nВсего файлов: <b>{count}</b>",
+            reply_markup=_merge_kb(count),
+        )
+        return
+
+    if _in_group(message) and not message.reply_to_message:
+        return
+
+    ext = ext_low.upper() or None
+    kind = _DOC_KINDS.get("." + ext_low if ext_low else "")
     if kind is None:
         mime = doc.mime_type or ""
         if mime.startswith("image/he"):
@@ -265,10 +338,7 @@ async def on_document(message: Message) -> None:
         elif mime == "application/pdf":
             kind = PDF
         elif mime == "application/zip":
-            await message.answer(
-                "🗜 <b>Архивы пока не умею</b>\nПришли файлы по одному 🙂"
-            )
-            return
+            kind = ZIP
         else:
             await message.answer(_UNSUPPORTED_TEXT)
             return
@@ -279,6 +349,235 @@ async def on_document(message: Message) -> None:
 @router.callback_query(F.data == "noop")
 async def cb_noop(callback: CallbackQuery) -> None:
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("mg:"))
+async def cb_merge(callback: CallbackQuery, bot: Bot) -> None:
+    action = callback.data.split(":", 1)[1]
+    uid = callback.from_user.id
+    entry = MERGES.get(uid)
+
+    if action == "x":
+        MERGES.pop(uid, None)
+        await callback.answer("Отменено")
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        return
+
+    if action == "go":
+        if not entry or len(entry["files"]) < 2:
+            await callback.answer("Нужно минимум 2 PDF", show_alert=True)
+            return
+        await callback.answer()
+        status = await callback.message.edit_text(f"📎 Склеиваю {len(entry['files'])} PDF…")
+        TMP_DIR.mkdir(parents=True, exist_ok=True)
+        token = uuid.uuid4().hex
+        parts: list[Path] = []
+        try:
+            from pypdf import PdfWriter
+
+            for i, fid in enumerate(entry["files"]):
+                p = TMP_DIR / f"{token}_{i}.pdf"
+                await bot.download(fid, destination=str(p))
+                parts.append(p)
+            writer = PdfWriter()
+            for p in parts:
+                writer.append(str(p))
+            out = TMP_DIR / f"{token}_merged.pdf"
+            with open(out, "wb") as f:
+                writer.write(f)
+            await db.consume(uid)
+            try:
+                await bot.set_message_reaction(
+                    callback.message.chat.id,
+                    callback.message.message_id,
+                    reaction=[ReactionTypeEmoji(emoji="🔥")],
+                )
+            except Exception:
+                pass
+            await status.edit_text(f"✅ Готово! {len(parts)} PDF → один")
+            await bot.send_document(
+                callback.message.chat.id,
+                document=FSInputFile(out),
+                caption="📄 <b>Склеенный PDF</b>",
+                message_effect_id=SUCCESS_EFFECT,
+            )
+            MERGES.pop(uid, None)
+            try:
+                await status.delete()
+            except Exception:
+                pass
+        except Exception:
+            logger.exception("merge failed")
+            try:
+                await status.edit_text("💔 Не удалось склеить эти PDF.")
+            except Exception:
+                pass
+        finally:
+            for p in parts:
+                p.unlink(missing_ok=True)
+            Path(TMP_DIR / f"{token}_merged.pdf").unlink(missing_ok=True)
+
+
+@router.callback_query(F.data.startswith("t:"))
+async def cb_trim(callback: CallbackQuery, bot: Bot) -> None:
+    parts = callback.data.split(":")
+    if len(parts) != 3:
+        return
+    _, act, key = parts
+    state = TRIMS.get(key)
+
+    if state is None:
+        await callback.answer("Сессия обрезки устарела 🔄", show_alert=True)
+        return
+    if callback.from_user.id != state["user_id"] and _in_group(callback.message):
+        pass
+    elif callback.from_user.id != state["user_id"]:
+        await callback.answer("Это не твой файл 🙂", show_alert=True)
+        return
+
+    if act == "cx":
+        TRIMS.pop(key, None)
+        state["path"].unlink(missing_ok=True)
+        await callback.answer("Отменено")
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        return
+
+    if callback.from_user.id != state["user_id"] and not _in_group(callback.message):
+        await callback.answer("Это не твой файл 🙂", show_alert=True)
+        return
+
+    dur = state["dur"]
+    if callback.from_user.id != state["user_id"] and not _in_group(callback.message):
+        await callback.answer("Это не твой файл 🙂", show_alert=True)
+        return
+
+    if act.startswith("s"):
+        delta = -15 if act.endswith("-") else 15
+        state["start"] = max(0, min(dur - 1, state["start"] + delta))
+        if state["end"] > dur:
+            state["end"] = dur
+        if state["end"] - state["start"] < 1:
+            state["end"] = min(dur, state["start"] + 1)
+    elif act.startswith("e"):
+        delta = -15 if act.endswith("-") else 15
+        state["end"] = max(state["start"] + 1, min(dur, state["end"] + delta))
+
+    if act in ("s-", "s+", "e-", "e+"):
+        await callback.answer()
+        await _render_trim(callback.message, key)
+        return
+
+    if act == "go":
+        start = state["start"]
+        length = state["end"] - state["start"]
+        kind = state["kind"]
+        await callback.answer()
+        status = await callback.message.edit_text(
+            f"✂️ Режу {_fmt_time(start)} – {_fmt_time(state['end'])}…"
+        )
+        out = None
+        try:
+            out = await asyncio.wait_for(
+                _trim_clip(state["path"], start, length, kind), timeout=300
+            )
+            await db.consume(state["user_id"])
+            send_type = "audio" if kind in (AUDIO, VOICE) else "animation"
+            cap = f"✂️ <b>Кусок вырезан!</b>\n⏱ {_fmt_time(start)} – {_fmt_time(state['end'])}"
+            sender = status.answer_audio if send_type == "audio" else status.answer_animation
+            kwargs = {"caption": cap}
+            await sender(FSInputFile(out), **kwargs)
+            try:
+                await status.delete()
+            except Exception:
+                pass
+        except Exception:
+            logger.exception("trim failed")
+            try:
+                await status.edit_text("💔 Не получилось вырезать кусок.")
+            except Exception:
+                pass
+        finally:
+            if out:
+                out.unlink(missing_ok=True)
+            st = TRIMS.pop(key, None)
+            if st:
+                st["path"].unlink(missing_ok=True)
+
+
+def _trim_kb(key: str):
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="◀️ Начало −15с", callback_data=f"t:s-:{key}"),
+                InlineKeyboardButton(text="Начало +15с ▶️", callback_data=f"t:s+:{key}"),
+            ],
+            [
+                InlineKeyboardButton(text="◀️ Конец −15с", callback_data=f"t:e-:{key}"),
+                InlineKeyboardButton(text="Конец +15с ▶️", callback_data=f"t:e+:{key}"),
+            ],
+            [
+                InlineKeyboardButton(text="✂️ Вырезать этот кусок", callback_data=f"t:go:{key}"),
+            ],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data=f"t:cx:{key}")],
+        ]
+    )
+
+
+async def _render_trim(msg: Message, key: str) -> None:
+    st = TRIMS[key]
+    await msg.edit_text(
+        f"✂️ <b>Обрезка</b> · всего {_fmt_time(st['dur'])}\n\n"
+        f"Выбранный кусок: <b>{_fmt_time(st['start'])} – {_fmt_time(st['end'])}</b>"
+        f" ({_fmt_time(st['end'] - st['start'])})\n\n"
+        "Двигай границы стрелками по ±15 секунд.",
+        reply_markup=_trim_kb(key),
+    )
+
+
+@router.callback_query(F.data.startswith("trim:"))
+async def cb_trim_start(callback: CallbackQuery, bot: Bot) -> None:
+    key = callback.data.split(":", 1)[1]
+    pending = _cache.get(key)
+    if pending is None:
+        await callback.answer("Файл устарел — отправь заново 🔄", show_alert=True)
+        return
+    if pending.kind not in (VIDEO, AUDIO, VOICE, VIDEO_NOTE):
+        await callback.answer("Обрезка доступна для видео и аудио", show_alert=True)
+        return
+    await callback.answer()
+
+    status = await callback.message.edit_text("📥 Скачиваю для обрезки…")
+    TMP_DIR.mkdir(parents=True, exist_ok=True)
+    path = TMP_DIR / f"trim_{uuid.uuid4().hex}"
+    try:
+        await bot.download(pending.file_id, destination=str(path))
+        dur = await asyncio.wait_for(_probe_duration(path), timeout=120)
+    except Exception:
+        logger.exception("trim download failed")
+        path.unlink(missing_ok=True)
+        try:
+            await status.edit_text("💔 Не смог прочитать длительность файла.")
+        except Exception:
+            pass
+        return
+
+    TRIMS[key] = {
+        "user_id": pending.user_id,
+        "path": path,
+        "dur": dur,
+        "start": 0.0,
+        "end": min(30.0, dur),
+        "kind": pending.kind,
+    }
+    await _render_trim(status, key)
 
 
 @router.callback_query(F.data.startswith("x:"))
@@ -292,6 +591,12 @@ async def cb_cancel(callback: CallbackQuery) -> None:
         pass
 
 
+def _resolve_send(spec_send: str, kind: str) -> str:
+    if spec_send == "auto":
+        return "animation" if kind == VIDEO else "audio"
+    return spec_send
+
+
 @router.callback_query(F.data.startswith("c:"))
 async def cb_convert(callback: CallbackQuery, bot: Bot) -> None:
     _, action_code, key = callback.data.split(":", 2)
@@ -300,7 +605,7 @@ async def cb_convert(callback: CallbackQuery, bot: Bot) -> None:
     if pending is None:
         await callback.answer("Файл устарел — отправь его заново 🔄", show_alert=True)
         return
-    if callback.from_user.id != pending.user_id:
+    if callback.from_user.id != pending.user_id and not _in_group(callback.message):
         await callback.answer("Это не твой файл 🙂", show_alert=True)
         return
 
@@ -311,7 +616,8 @@ async def cb_convert(callback: CallbackQuery, bot: Bot) -> None:
 
     await callback.answer()
 
-    if not shutil.which("ffmpeg") and spec.send in ("voice", "audio", "animation"):
+    send_type = _resolve_send(spec.send, pending.kind)
+    if not shutil.which("ffmpeg") and send_type in ("voice", "audio", "animation"):
         await callback.message.edit_text(
             "⚙️ Сервер временно не может обработать медиа. Попробуй позже."
         )
@@ -333,6 +639,8 @@ async def cb_convert(callback: CallbackQuery, bot: Bot) -> None:
     ok_sizes: list[int] = []
     monitor: asyncio.Task | None = None
 
+    n_params = len(inspect.signature(spec.run).parameters)
+
     async def job() -> None:
         for i, fid in enumerate(batch_ids):
             src = TMP_DIR / f"{token}_{i}"
@@ -345,7 +653,11 @@ async def cb_convert(callback: CallbackQuery, bot: Bot) -> None:
                 )
 
         async def run_one(s: Path):
-            return await asyncio.wait_for(spec.run(s), timeout=300)
+            if n_params >= 2:
+                raw = spec.run(s, pending.kind)
+            else:
+                raw = spec.run(s)
+            return await asyncio.wait_for(raw, timeout=300)
 
         outs = await asyncio.gather(
             *[run_one(TMP_DIR / f"{token}_{i}") for i in range(len(batch_ids))]
@@ -353,6 +665,12 @@ async def cb_convert(callback: CallbackQuery, bot: Bot) -> None:
         for r in outs:
             if isinstance(r, str):
                 texts.append(r)
+            elif isinstance(r, tuple) and len(r) == 2 and isinstance(r[1], int):
+                files, skipped_n = r
+                results.extend(files)
+                temps.extend(files)
+                if skipped_n:
+                    texts.append(f"⚠️ Пропущено файлов: {skipped_n}")
             else:
                 results.append(r)
                 temps.append(r)
@@ -382,6 +700,7 @@ async def cb_convert(callback: CallbackQuery, bot: Bot) -> None:
 
             monitor = asyncio.create_task(_track())
 
+    out_path = None
     try:
         await fut
         await db.consume(pending.user_id)
@@ -394,7 +713,7 @@ async def cb_convert(callback: CallbackQuery, bot: Bot) -> None:
         except Exception:
             pass
 
-        if texts:
+        if texts and not results:
             joined = ("\n\n" + "─" * 12 + "\n\n").join(texts)[:3500]
             await status.edit_text(
                 f"{joined}\n\n<i>Что-нибудь ещё?</i>",
@@ -404,15 +723,23 @@ async def cb_convert(callback: CallbackQuery, bot: Bot) -> None:
 
         caption = ""
         if len(results) == 1:
+            out_path = results[0]
             caption = _build_caption(results[0], ok_sizes[0])
         else:
             saved_total_in = sum(ok_sizes)
             saved_total_out = sum(p.stat().st_size for p in results)
-            caption = f"✅ Готово! {len(results)} шт · 📦 {_fmt_size(saved_total_in)} → {_fmt_size(saved_total_out)}"
+            caption = (
+                f"✅ Готово! {len(results)} шт · "
+                f"📦 {_fmt_size(saved_total_in)} → {_fmt_size(saved_total_out)}"
+            )
+            if texts:
+                caption += "\n" + "\n".join(texts)[:300]
 
         await status.edit_text(f"📤 <b>Отправляю…</b>\n{spec.label}")
-        await bot.send_chat_action(callback.message.chat.id, CHAT_ACTIONS[spec.send])
-        await _send_results(bot, status, spec.send, results, caption, is_batch)
+        await bot.send_chat_action(
+            callback.message.chat.id, CHAT_ACTIONS.get(send_type, ChatAction.TYPING)
+        )
+        await _send_results(bot, status, send_type, results, caption, is_batch)
 
         try:
             await status.edit_text(
@@ -437,8 +764,19 @@ async def cb_convert(callback: CallbackQuery, bot: Bot) -> None:
             t.unlink(missing_ok=True)
 
 
+PHOTO_MAX_BYTES = 10 * 1024 * 1024
+
+
+def _oversized_as_document(path: Path) -> bool:
+    return path.stat().st_size > PHOTO_MAX_BYTES
+
+
 async def _send_results(bot: Bot, status: Message, send_type: str, paths, caption: str, is_batch: bool) -> None:
     chat_id = status.chat.id
+
+    if is_batch and any(_oversized_as_document(p) for p in paths):
+        send_type = "document"
+
     if is_batch and send_type in ("photo", "document"):
         media_cls = InputMediaPhoto if send_type == "photo" else InputMediaDocument
         for chunk_start in range(0, len(paths), 10):
@@ -458,12 +796,32 @@ async def _send_results(bot: Bot, status: Message, send_type: str, paths, captio
         "document": status.answer_document,
     }
     for idx, path in enumerate(paths):
-        sender = sender_map[send_type]
-        kwargs = {"caption": caption} if send_type != "voice" and idx == 0 else {}
+        st = send_type
+        cap = caption if idx == 0 else None
+        if st == "photo" and _oversized_as_document(path):
+            st = "document"
+            if cap:
+                cap += "\n📎 Отправил файлом — для фото лимит Telegram 10 МБ"
+        sender = sender_map[st]
+        kwargs = {"caption": cap} if st != "voice" else {}
         try:
             await sender(FSInputFile(path), **kwargs, message_effect_id=SUCCESS_EFFECT)
         except TelegramBadRequest as e:
-            if "MESSAGE_EFFECT" in str(e) or "effect" in str(e).lower():
+            msg = str(e)
+            if "MESSAGE_EFFECT" in msg or "effect" in msg.lower():
                 await sender(FSInputFile(path), **kwargs)
+            elif "too big" in msg.lower() and st != "document":
+                await status.answer_document(
+                    FSInputFile(path),
+                    caption=(cap or "") + "\n📎 Отправил файлом — не влезло как медиа",
+                    message_effect_id=SUCCESS_EFFECT,
+                )
             else:
                 raise
+
+
+def _ext_from_mime(mime: str | None) -> str | None:
+    if not mime or "/" not in mime:
+        return None
+    sub = mime.split("/", 1)[1]
+    return sub.upper() if len(sub) <= 5 else None

@@ -28,6 +28,13 @@ class Database:
             await self._conn.commit()
         except aiosqlite.Error:
             pass
+        try:
+            await self._conn.execute(
+                "ALTER TABLE users ADD COLUMN quiet INTEGER NOT NULL DEFAULT 0"
+            )
+            await self._conn.commit()
+        except aiosqlite.Error:
+            pass
 
     async def close(self) -> None:
         if self._conn:
@@ -85,6 +92,21 @@ class Database:
         assert self._conn
         cur = await self._conn.execute("SELECT user_id FROM users")
         return [r[0] for r in await cur.fetchall()]
+
+    async def get_quiet(self, user_id: int) -> bool:
+        assert self._conn
+        cur = await self._conn.execute(
+            "SELECT quiet FROM users WHERE user_id = ?", (user_id,)
+        )
+        row = await cur.fetchone()
+        return bool(row[0]) if row else False
+
+    async def set_quiet(self, user_id: int, value: bool) -> None:
+        assert self._conn
+        await self._conn.execute(
+            "UPDATE users SET quiet = ? WHERE user_id = ?", (int(value), user_id)
+        )
+        await self._conn.commit()
 
 
 db = Database()

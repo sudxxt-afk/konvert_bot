@@ -129,10 +129,12 @@ def _render_welcome(first_name: str | None) -> str:
 async def _render_stats(user_id: int) -> str:
     stats = await db.stats(user_id)
     total_all = await db.global_total()
+    quiet = "🤫 вкл" if await db.get_quiet(user_id) else "выкл"
     lines = [
         "📊 <b>Твоя статистика</b>\n",
         f"🔢 Твоих конвертаций: <b>{stats['total']}</b>",
         f"🌍 Всего у бота: <b>{total_all}</b>",
+        f"🧹 Тихий режим: {quiet}",
     ]
     if stats.get("created"):
         lines.append(f"📆 С нами с: <b>{stats['created']}</b>")
@@ -161,7 +163,37 @@ async def cmd_help(message: Message) -> None:
 async def cmd_status(message: Message) -> None:
     user_id = message.from_user.id
     await db.ensure_user(user_id, message.from_user.username)
-    await message.answer(await _render_stats(user_id), reply_markup=category_back())
+    stats = await db.stats(user_id)
+    quiet = "🤫 вкл" if await db.get_quiet(user_id) else "выкл"
+    await message.answer(
+        f"📊 <b>Твоя статистика</b>\n\n"
+        f"🔢 Конвертаций: <b>{stats['total']}</b>\n"
+        f"🧹 Тихий режим: {quiet}\n\n"
+        f"<i>Переключить: /quiet</i>",
+        reply_markup=category_back(),
+    )
+
+
+@router.message(Command("quiet"))
+async def cmd_quiet(message: Message) -> None:
+    from handlers.convert import schedule_delete
+
+    user_id = message.from_user.id
+    await db.ensure_user(user_id, message.from_user.username)
+    current = await db.get_quiet(user_id)
+    new_value = not current
+    await db.set_quiet(user_id, new_value)
+    text = (
+        "🤫 <b>Тихий режим включён</b>\n\n"
+        "Служебные сообщения («Скачиваю…», «Готово» и т.п.)\n"
+        "будут исчезать через минуту —\n"
+        "в чате останутся только файлы.\n\n"
+        "<i>Выключить: /quiet</i>"
+        if new_value
+        else "🔔 <b>Тихий режим выключен</b>\n\nСлужебные сообщения остаются в чате."
+    )
+    confirm = await message.answer(text)
+    schedule_delete(confirm, 10)
 
 
 @router.message(Command("qr"))

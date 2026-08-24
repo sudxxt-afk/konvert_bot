@@ -163,14 +163,26 @@ def _in_group(message: Message) -> bool:
     return (message.chat.type or "private") != "private"
 
 
+def schedule_delete(msg: Message, delay: float = 60) -> None:
+    async def _del():
+        await asyncio.sleep(delay)
+        try:
+            await msg.delete()
+        except Exception:
+            pass
+
+    asyncio.create_task(_del())
+
+
 async def _register(message: Message, kind: str, file_id: str, size: int | None, ext: str | None = None) -> None:
     await db.ensure_user(message.from_user.id, message.from_user.username)
     if size and size > MAX_FILE_MB * 1024 * 1024:
-        await message.answer(
+        warn = await message.answer(
             "😔 <b>Файл слишком большой</b>\n"
             f"Лимит Telegram для ботов — {MAX_FILE_MB} МБ.\n"
             "Сожми файл и попробуй снова 🙏"
         )
+        schedule_delete(warn, 45)
         return
     key = uuid.uuid4().hex[:8]
     _cache_put(
@@ -351,7 +363,8 @@ async def on_document(message: Message) -> None:
         elif mime == "application/zip":
             kind = ZIP
         else:
-            await message.answer(_UNSUPPORTED_TEXT)
+            bad = await message.answer(_UNSUPPORTED_TEXT)
+            schedule_delete(bad, 30)
             return
 
     await _register(message, kind, doc.file_id, doc.file_size, ext=ext)
@@ -423,7 +436,8 @@ async def cb_merge(callback: CallbackQuery, bot: Bot) -> None:
         except Exception:
             logger.exception("merge failed")
             try:
-                await status.edit_text("💔 Не удалось склеить эти PDF.")
+                fail = await status.edit_text("💔 Не удалось склеить эти PDF.")
+                schedule_delete(fail, 90)
             except Exception:
                 pass
         finally:
@@ -510,7 +524,8 @@ async def cb_trim(callback: CallbackQuery, bot: Bot) -> None:
         except Exception:
             logger.exception("trim failed")
             try:
-                await status.edit_text("💔 Не получилось вырезать кусок.")
+                fail = await status.edit_text("💔 Не получилось вырезать кусок.")
+                schedule_delete(fail, 90)
             except Exception:
                 pass
         finally:
@@ -712,6 +727,7 @@ async def cb_convert(callback: CallbackQuery, bot: Bot) -> None:
             monitor = asyncio.create_task(_track())
 
     out_path = None
+    quiet = await db.get_quiet(pending.user_id)
     try:
         await fut
         await db.consume(pending.user_id)
@@ -727,10 +743,14 @@ async def cb_convert(callback: CallbackQuery, bot: Bot) -> None:
 
         if texts and not results:
             joined = ("\n\n" + "─" * 12 + "\n\n").join(texts)[:3500]
-            await status.edit_text(
-                f"{joined}\n\n<i>Что-нибудь ещё?</i>",
-                reply_markup=conversion_options(pending.kind, key),
-            )
+            if quiet:
+                await status.edit_text(joined)
+                schedule_delete(status, 180)
+            else:
+                await status.edit_text(
+                    f"{joined}\n\n<i>Что-нибудь ещё?</i>",
+                    reply_markup=conversion_options(pending.kind, key),
+                )
             return
 
         caption = ""
@@ -753,13 +773,16 @@ async def cb_convert(callback: CallbackQuery, bot: Bot) -> None:
         )
         await _send_results(bot, status, send_type, results, caption, is_batch)
 
-        try:
-            await status.edit_text(
-                "🔁 <b>Ещё что-нибудь?</b>",
-                reply_markup=conversion_options(pending.kind, key),
-            )
-        except TelegramBadRequest:
-            pass
+        if quiet:
+            schedule_delete(status, 60)
+        else:
+            try:
+                await status.edit_text(
+                    "🔁 <b>Ещё что-нибудь?</b>",
+                    reply_markup=conversion_options(pending.kind, key),
+                )
+            except TelegramBadRequest:
+                pass
     except Exception:
         logger.exception("conversion failed")
         try:
@@ -767,6 +790,7 @@ async def cb_convert(callback: CallbackQuery, bot: Bot) -> None:
                 "💔 <b>Не получилось</b>\n"
                 "Этот файл не поддался. Попробуй другой формат или файл."
             )
+            schedule_delete(status, 90)
         except Exception:
             pass
     finally:

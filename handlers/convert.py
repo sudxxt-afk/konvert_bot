@@ -194,6 +194,11 @@ async def _register(message: Message, kind: str, file_id: str, size: int | None,
         pref_spec = ACTIONS.get(preferred)
         if not pref_spec or kind not in pref_spec.kinds:
             preferred = None
+    hint = (
+        "\n\n<i>💬 Реплай на это сообщение — предложу форматы снова.</i>"
+        if _in_group(message)
+        else ""
+    )
     await message.answer(
         f"<b>{card}</b>\n\nЧто с ним сделать? 👇{hint}",
         reply_markup=conversion_options(kind, key, preferred),

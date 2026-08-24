@@ -49,8 +49,8 @@ def _out(src: Path, suffix: str) -> Path:
 
 async def _to_voice(src: Path) -> Path:
     out = _out(src, ".ogg")
-    await _ffmpeg("-i", str(src), "-vn", "-ac", "1", "-ar", "32000",
-                  "-c:a", "libopus", "-b:a", "32k", str(out))
+    await _ffmpeg("-i", str(src), "-vn", "-ac", "1", "-ar", "48000",
+                  "-c:a", "libopus", "-b:a", "48k", str(out))
     return out
 
 

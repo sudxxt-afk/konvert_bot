@@ -65,5 +65,24 @@ class Database:
         row = await cur.fetchone()
         return int(row[0])
 
+    async def users_count(self) -> int:
+        assert self._conn
+        cur = await self._conn.execute("SELECT COUNT(*) FROM users")
+        row = await cur.fetchone()
+        return int(row[0])
+
+    async def recent_users(self, limit: int = 10) -> list:
+        assert self._conn
+        cur = await self._conn.execute(
+            "SELECT user_id, username, total, created FROM users ORDER BY user_id DESC LIMIT ?",
+            (limit,),
+        )
+        return await cur.fetchall()
+
+    async def all_user_ids(self) -> list[int]:
+        assert self._conn
+        cur = await self._conn.execute("SELECT user_id FROM users")
+        return [r[0] for r in await cur.fetchall()]
+
 
 db = Database()

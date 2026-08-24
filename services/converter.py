@@ -2,13 +2,22 @@ import asyncio
 import csv
 import hashlib
 import json
+import os
 import re
 import uuid
+import zipfile
 from dataclasses import dataclass, replace
 from pathlib import Path
 
 from PIL import Image
-from pypdf import PdfReader
+from pypdf import PdfReader, PdfWriter
+
+try:
+    from pillow_heif import register_heif_opener
+
+    register_heif_opener()
+except ImportError:
+    pass
 
 
 async def _ffmpeg(*args: str) -> None:
@@ -69,6 +78,57 @@ async def _to_gif(src: Path) -> Path:
 async def _strip_audio(src: Path) -> Path:
     out = _out(src, "_mute.mp4")
     await _ffmpeg("-i", str(src), "-an", "-c:v", "copy", str(out))
+    return out
+
+
+async def _video_sticker(src: Path) -> Path:
+    out = _out(src, "_sticker.webm")
+    await _ffmpeg(
+        "-i", str(src), "-t", "3",
+        "-vf", "scale=min(512,iw):-2,fps=30,format=yuv420p",
+        "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", "34",
+        "-an", str(out),
+    )
+    return out
+
+
+async def _gs(*args: str) -> None:
+    proc = await asyncio.create_subprocess_exec(
+        "gs", "-dNOPAUSE", "-dBATCH", "-dQUIET", *args,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        raise RuntimeError(f"ghostscript failed: {stderr.decode(errors='ignore')[:500]}")
+
+
+def _pdf_split_sync(src: Path) -> Path:
+    reader = PdfReader(str(src))
+    pages = reader.pages
+    if len(pages) < 2:
+        raise RuntimeError("single page")
+    zip_path = _out(src, "_pages.zip")
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for i, page in enumerate(pages, start=1):
+            writer = PdfWriter()
+            writer.add_page(page)
+            part = src.with_name(f"{src.stem}_p{i}.pdf")
+            with open(part, "wb") as f:
+                writer.write(f)
+            zf.write(part, arcname=part.name)
+            part.unlink(missing_ok=True)
+    return zip_path
+
+
+async def _pdf_compress(src: Path) -> Path:
+    out = _out(src, "_compressed.pdf")
+    await _gs(
+        "-sDEVICE=pdfwrite",
+        "-dCompatibilityLevel=1.4",
+        "-dPDFSETTINGS=/ebook",
+        "-o", str(out), str(src),
+    )
     return out
 
 
@@ -374,6 +434,7 @@ ACTIONS: dict[str, ActionSpec] = {
         ActionSpec("mp4", "📦 Нормализовать MP4", frozenset({VIDEO}), "animation", lambda s: _to_mp4(s)),
         ActionSpec("webm", "🌐 Сжать в WebM", frozenset({VIDEO}), "animation", lambda s: _to_webm(s)),
         ActionSpec("mute", "🔇 Убрать звук", frozenset({VIDEO}), "animation", lambda s: _strip_audio(s)),
+        ActionSpec("vsticker", "🩹 Видео-стикер 3 сек", frozenset({VIDEO}), "animation", lambda s: _video_sticker(s)),
         ActionSpec("jpg", "🖼 JPEG", frozenset({PHOTO}), "photo",
                    lambda s: asyncio.to_thread(_convert_image, s, "JPEG", quality=90)),
         ActionSpec("png", "🎨 PNG", frozenset({PHOTO}), "photo",
@@ -399,6 +460,10 @@ ACTIONS: dict[str, ActionSpec] = {
         ActionSpec("qrscan", "🔍 Найти QR", frozenset({PHOTO}), "text", lambda s: _qr_decode(s)),
         ActionSpec("txt", "📄 Текст TXT", frozenset({PDF, SUB, DOCX}), "document",
                    lambda s: asyncio.to_thread(_to_txt, s)),
+        ActionSpec("pdfsplit", "✂️ По страницам (ZIP)", frozenset({PDF}), "document",
+                   lambda s: asyncio.to_thread(_pdf_split_sync, s)),
+        ActionSpec("pdfcomp", "📦 Сжать PDF", frozenset({PDF}), "document",
+                   lambda s: _pdf_compress(s)),
         ActionSpec("pdfmake", "📄 Собрать PDF", frozenset({TEXT}), "document",
                    lambda s: asyncio.to_thread(_txt_to_pdf_sync, s)),
         ActionSpec("qrmake", "🔗 Сделать QR", frozenset({TEXT}), "document",
@@ -452,6 +517,7 @@ _GROUPS = {
     "mp4": "🎞 Формат видео",
     "webm": "🎞 Формат видео",
     "mute": "🎞 Формат видео",
+    "vsticker": "🎞 Формат видео",
     "jpg": "🖼 Конвертировать в",
     "png": "🖼 Конвертировать в",
     "webp": "🖼 Конвертировать в",
@@ -464,6 +530,8 @@ _GROUPS = {
     "invert": "✨ Эффекты",
     "rotate": "✨ Эффекты",
     "txt": "📄 Документы",
+    "pdfsplit": "✂️ PDF-инструменты",
+    "pdfcomp": "✂️ PDF-инструменты",
     "pdfmake": "📄 Документы",
     "qrmake": "🔗 QR-коды",
     "csv": "📊 Таблицы",

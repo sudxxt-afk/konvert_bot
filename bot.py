@@ -6,11 +6,12 @@ import sys
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand
 
 from config import BOT_TOKEN
 from db import db
-from handlers import convert, start
+from handlers import admin, convert, inline, start
 
 
 async def _setup_bot_info(bot: Bot) -> None:
@@ -23,10 +24,23 @@ async def _setup_bot_info(bot: Bot) -> None:
         ]
     )
     await bot.set_my_description(
-        "Пришли файл — сконвертирую: видео → войс/MP3/GIF, аудио → MP3/WAV/M4A, "
-        "фото и PDF. Бесплатно, без лимитов и рекламы."
+        "🔄 KudexConvert — универсальный конвертер файлов в Telegram\n\n"
+        "🎬 Видео → войс · MP3 · GIF · WebM · видео-стикер\n"
+        "🎵 Аудио → MP3 · WAV · M4A · FLAC · рингтон M4R\n"
+        "🖼 Фото → JPEG · PNG · WebP · стикер 512px · сжатие до −70%\n"
+        "📄 Документы → PDF · TXT · DOCX · XLSX · CSV · субтитры\n\n"
+        "🔗 QR-коды из текста + распознавание с фото\n"
+        "ℹ️ Инфо о файле · хеши MD5/SHA256\n"
+        "📸 Альбомы — обработка пачкой\n"
+        "✂️ PDF по страницам или сжатие в разы\n\n"
+        "⚡️ Бесплатно · Без рекламы · Без лимитов\n"
+        "👤 Владелец: @inhgalator"
     )
-    await bot.set_my_short_description("Универсальный конвертер файлов. Просто пришли файл 📎")
+    await bot.set_my_short_description(
+        "🔄 Конвертер всего: видео · аудио · фото · PDF · QR.\n"
+        "Бесплатно, без лимитов ⚡\n"
+        "Владелец: @inhgalator"
+    )
 
 
 async def main() -> None:
@@ -52,8 +66,8 @@ async def main() -> None:
     await db.init()
 
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-    dp = Dispatcher()
-    dp.include_routers(start.router, convert.router)
+    dp = Dispatcher(storage=MemoryStorage())
+    dp.include_routers(admin.router, start.router, inline.router, convert.router)
 
     try:
         await bot.delete_webhook(drop_pending_updates=True)

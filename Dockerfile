@@ -4,12 +4,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PYTHONOPTIMIZE=2
+    PYTHONOPTIMIZE=2 \
+    MALLOC_ARENA_MAX=2
 
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg ghostscript fonts-dejavu-core libglib2.0-0 \
+    && apt-get install -y --no-install-recommends ffmpeg ghostscript libzbar0 fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

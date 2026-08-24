@@ -119,6 +119,8 @@ TRIMS: dict[str, dict] = {}
 
 MERGES: dict[int, dict] = {}
 
+LAST_ACTION: dict[int, str] = {}
+
 
 def _cache_put(key: str, pending: Pending) -> None:
     _cache[key] = pending
@@ -187,10 +189,14 @@ async def _register(message: Message, kind: str, file_id: str, size: int | None,
     if size:
         meta.append(_fmt_size(size))
     card = f"{title}" + (" · ".join([""] + meta) if meta else "")
-    hint = "\n\n<i>💬 Реплай на это сообщение — предложу форматы снова.</i>" if _in_group(message) else ""
+    preferred = LAST_ACTION.get(message.from_user.id)
+    if preferred:
+        pref_spec = ACTIONS.get(preferred)
+        if not pref_spec or kind not in pref_spec.kinds:
+            preferred = None
     await message.answer(
         f"<b>{card}</b>\n\nЧто с ним сделать? 👇{hint}",
-        reply_markup=conversion_options(kind, key),
+        reply_markup=conversion_options(kind, key, preferred),
     )
 
 
@@ -704,6 +710,7 @@ async def cb_convert(callback: CallbackQuery, bot: Bot) -> None:
     try:
         await fut
         await db.consume(pending.user_id)
+        LAST_ACTION[pending.user_id] = spec.code
         try:
             await bot.set_message_reaction(
                 callback.message.chat.id,

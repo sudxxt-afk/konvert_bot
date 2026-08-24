@@ -13,6 +13,8 @@ from pathlib import Path
 from PIL import Image
 from pypdf import PdfReader, PdfWriter
 
+from config import FFMPEG_THREADS, NICE_LEVEL
+
 try:
     from pillow_heif import register_heif_opener
 
@@ -21,9 +23,18 @@ except ImportError:
     pass
 
 
+def _low_priority(cmd: list) -> list:
+    return ["nice", "-n", str(NICE_LEVEL), *cmd]
+
+
 async def _ffmpeg(*args: str) -> None:
+    full = _low_priority([
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-threads", str(FFMPEG_THREADS),
+        *args,
+    ])
     proc = await asyncio.create_subprocess_exec(
-        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", *args,
+        *full,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -95,7 +106,7 @@ async def _video_sticker(src: Path) -> Path:
 
 async def _gs(*args: str) -> None:
     proc = await asyncio.create_subprocess_exec(
-        "gs", "-dNOPAUSE", "-dBATCH", "-dQUIET", *args,
+        *_low_priority(["gs", "-dNOPAUSE", "-dBATCH", "-dQUIET", *args]),
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -193,8 +204,10 @@ def eval_fps(expr: str) -> float:
 
 async def _media_info(src: Path) -> str:
     proc = await asyncio.create_subprocess_exec(
-        "ffprobe", "-v", "quiet", "-print_format", "json",
-        "-show_format", "-show_streams", str(src),
+        *_low_priority([
+            "ffprobe", "-v", "quiet", "-print_format", "json",
+            "-show_format", "-show_streams", str(src),
+        ]),
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
     )
     stdout, _ = await proc.communicate()
@@ -238,8 +251,10 @@ async def _media_info(src: Path) -> str:
 
 async def _probe_duration(src: Path) -> float:
     proc = await asyncio.create_subprocess_exec(
-        "ffprobe", "-v", "quiet", "-print_format", "json",
-        "-show_format", str(src),
+        *_low_priority([
+            "ffprobe", "-v", "quiet", "-print_format", "json",
+            "-show_format", str(src),
+        ]),
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
     )
     stdout, _ = await proc.communicate()
@@ -439,19 +454,16 @@ def make_qr_png(text: str) -> Path:
 
 
 async def _qr_decode(src: Path) -> str:
-    import cv2
-
     def decode() -> str:
-        img = cv2.imread(str(src))
-        if img is None:
-            raise RuntimeError("not an image")
-        detector = cv2.QRCodeDetector()
-        data, points, _ = detector.detectAndDecode(img)
-        return data
+        from pyzbar.pyzbar import decode as zbar_decode
+
+        with Image.open(src) as im:
+            found = zbar_decode(im.convert("L"))
+        if not found:
+            raise RuntimeError("no qr found")
+        return found[0].data.decode("utf-8", errors="replace")
 
     data = await asyncio.to_thread(decode)
-    if not data:
-        raise RuntimeError("no qr found")
     return f"🔍 <b>QR распознан</b>\n\n<code>{data}</code>"
 
 

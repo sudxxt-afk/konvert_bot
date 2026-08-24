@@ -36,6 +36,8 @@ def is_admin(user) -> bool:
 
 MAX_FILE_MB = 19
 MAX_PARALLEL = max(1, int(os.getenv("MAX_PARALLEL", "2")))
+FFMPEG_THREADS = max(1, int(os.getenv("FFMPEG_THREADS", "1")))
+NICE_LEVEL = max(0, int(os.getenv("NICE_LEVEL", "15")))
 
 DATA_DIR = Path(os.getenv("DATA_DIR", str(BASE_DIR)))
 TMP_DIR = Path(os.getenv("TMP_DIR", str(DATA_DIR / "tmp")))

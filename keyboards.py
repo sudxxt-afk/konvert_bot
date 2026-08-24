@@ -54,7 +54,7 @@ def category_back() -> InlineKeyboardMarkup:
     )
 
 
-def conversion_options(kind: str, key: str) -> InlineKeyboardMarkup:
+def conversion_options(kind: str, key: str, preferred: str | None = None) -> InlineKeyboardMarkup:
     specs = options_for(kind)
     rows: list[list[InlineKeyboardButton]] = []
     current_group = None
@@ -69,6 +69,8 @@ def conversion_options(kind: str, key: str) -> InlineKeyboardMarkup:
         buffer = []
 
     for spec in specs:
+        if preferred and spec.code == preferred:
+            continue
         if spec.group != current_group:
             flush()
             current_group = spec.group
@@ -78,5 +80,21 @@ def conversion_options(kind: str, key: str) -> InlineKeyboardMarkup:
             _btn(spec.label, f"c:{spec.code}:{key}", _OPTION_STYLES[len(rows) % 4], f"opt:{spec.code}")
         )
     flush()
+
+    if preferred:
+        pref = next((s for s in specs if s.code == preferred), None)
+        if pref:
+            rows.insert(
+                0,
+                [
+                    InlineKeyboardButton(
+                        text=f"⚡️ {pref.label} — как в прошлый раз",
+                        callback_data=f"c:{pref.code}:{key}",
+                        style="success",
+                        icon_custom_emoji_id=BUTTON_ICONS.get(f"opt:{pref.code}"),
+                    )
+                ],
+            )
+
     rows.append([InlineKeyboardButton(text="✖ Отмена", callback_data=f"x:{key}", style="danger")])
     return InlineKeyboardMarkup(inline_keyboard=rows)

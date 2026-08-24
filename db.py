@@ -10,6 +10,8 @@ class Database:
 
     async def init(self) -> None:
         self._conn = await aiosqlite.connect(self._path)
+        await self._conn.execute("PRAGMA journal_mode=WAL")
+        await self._conn.execute("PRAGMA synchronous=NORMAL")
         await self._conn.execute(
             """
             CREATE TABLE IF NOT EXISTS users (

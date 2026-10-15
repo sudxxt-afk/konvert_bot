@@ -1,6 +1,15 @@
 # 🔄 Konvert Bot (KudexConvert) — универсальный конвертер файлов для Telegram
 
-Бесплатный бот-конвертер без рекламы. Пришли файл — бот покажет кнопки со всеми доступными конвертациями. Видео, аудио, фото, документы, субтитры, архивы, QR-коды — всё в одном боте.
+![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python)
+![aiogram](https://img.shields.io/badge/Telegram_Bot-Docker-26A5E4?style=flat-square&logo=telegram)
+![FFmpeg](https://img.shields.io/badge/FFmpeg-inside-007931?style=flat-square)
+![SQLite](https://img.shields.io/badge/SQLite-stats-003B57?style=flat-square)
+![License](https://img.shields.io/badge/License-MIT-9ece6a?style=flat-square)
+![Ads](https://img.shields.io/badge/Реклама-нет-e0af68?style=flat-square)
+
+> Бесплатный бот-конвертер без рекламы. Пришли файл — бот покажет кнопки со всеми доступными конвертациями. Видео, аудио, фото, документы, субтитры, архивы, QR-коды — всё в одном боте.
+
+![Как это работает](assets/preview.svg)
 
 ## Возможности
 

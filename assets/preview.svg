@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="860" height="340" font-family="monospace">
+  <rect width="860" height="340" rx="16" fill="#1a1b26"/>
+  <text x="430" y="36" text-anchor="middle" font-size="20" fill="#26a5e4">🔄 Konvert Bot</text>
+  <text x="430" y="58" text-anchor="middle" font-size="12" fill="#565f89">прислал файл → кнопки → очередь → результат · tmp чистится сам</text>
+  <g font-size="13">
+    <rect x="30" y="86" width="170" height="80" rx="10" fill="#24283b" stroke="#26a5e4" stroke-width="2"/>
+    <text x="115" y="114" text-anchor="middle" fill="#26a5e4">📎 файл</text>
+    <text x="115" y="136" text-anchor="middle" fill="#565f89">видео · аудио</text>
+    <text x="115" y="154" text-anchor="middle" fill="#565f89">фото · доки · zip</text>
+    <rect x="225" y="86" width="170" height="80" rx="10" fill="#24283b" stroke="#9ece6a" stroke-width="2"/>
+    <text x="310" y="114" text-anchor="middle" fill="#9ece6a">🔘 кнопки</text>
+    <text x="310" y="136" text-anchor="middle" fill="#565f89">все конвертации</text>
+    <text x="310" y="154" text-anchor="middle" fill="#565f89">«как в прошлый раз» ⚡️</text>
+    <rect x="420" y="86" width="170" height="80" rx="10" fill="#24283b" stroke="#e0af68" stroke-width="2"/>
+    <text x="505" y="114" text-anchor="middle" fill="#e0af68">⏳ очередь ×2</text>
+    <text x="505" y="136" text-anchor="middle" fill="#565f89">параллельно</text>
+    <text x="505" y="154" text-anchor="middle" fill="#565f89">таймаут 5 мин</text>
+    <rect x="615" y="86" width="215" height="80" rx="10" fill="#24283b" stroke="#bb9af7" stroke-width="2"/>
+    <text x="722" y="114" text-anchor="middle" fill="#bb9af7">⚙️ ffmpeg · Pillow</text>
+    <text x="722" y="136" text-anchor="middle" fill="#565f89">pypdf · qrcode · fpdf2</text>
+    <text x="722" y="154" text-anchor="middle" fill="#565f89">лимит 19МБ · чистка tmp</text>
+  </g>
+  <g stroke="#565f89" stroke-width="2">
+    <line x1="200" y1="126" x2="225" y2="126"/>
+    <line x1="395" y1="126" x2="420" y2="126"/>
+    <line x1="590" y1="126" x2="615" y2="126"/>
+  </g>
+  <g font-size="12" text-anchor="middle">
+    <rect x="40" y="196" width="140" height="44" rx="22" fill="#24283b" stroke="#26a5e4" stroke-width="2"/>
+    <text x="110" y="223" fill="#c0caf5">🎬→🎵 MP3</text>
+    <rect x="195" y="196" width="140" height="44" rx="22" fill="#24283b" stroke="#26a5e4" stroke-width="2"/>
+    <text x="265" y="223" fill="#c0caf5">🎬→ GIF</text>
+    <rect x="350" y="196" width="140" height="44" rx="22" fill="#24283b" stroke="#26a5e4" stroke-width="2"/>
+    <text x="420" y="223" fill="#c0caf5">🖼→ WebP</text>
+    <rect x="505" y="196" width="140" height="44" rx="22" fill="#24283b" stroke="#26a5e4" stroke-width="2"/>
+    <text x="575" y="223" fill="#c0caf5">📄→ TXT</text>
+    <rect x="660" y="196" width="160" height="44" rx="22" fill="#26a5e4"/>
+    <text x="740" y="223" fill="#1a1b26">🔗 QR · хеши</text>
+  </g>
+  <text x="430" y="272" text-anchor="middle" font-size="12" fill="#565f89">+ альбомы медиагруппой · инлайн @kudexconvert_bot · тихий режим 🤫 · админка 📊</text>
+  <text x="430" y="300" text-anchor="middle" font-size="12" fill="#565f89">Docker: непривилегированный юзер · healthcheck 60с · том bot-data · ротация логов</text>
+</svg>
